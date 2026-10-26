@@ -1,7 +1,26 @@
+[client]
+toolbarMode = "minimal"
 [theme]
 base = "light"
-primaryColor = "#087F8C"
+primaryColor = "#0F766E"
 backgroundColor = "#F5F7FB"
-secondaryBackgroundColor = "#E8F0F5"
+secondaryBackgroundColor = "#FFFFFF"
 textColor = "#183044"
-font = "sans serif"
+font = "sans-serif"
+headingFont = "sans-serif"
+
+baseFontSize = 17
+metricValueFontSize = "2.5rem"
+metricValueFontWeight = 700
+
+headingFontSizes =  [
+    "2.7rem",
+    "2rem",
+    "1.5rem",
+    "1.25rem",
+    "1.1rem",
+    "1rem"
+]
+headingFontWeights = [750, 700, 650, 600, 550, 500]
+baseRadius = "0.75rem"
+

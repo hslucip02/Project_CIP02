@@ -70,23 +70,13 @@ st.markdown(
 
 # Project files exported by the modelling notebook.
 PROJECT_DIR = Path(__file__).resolve().parent
-
 MODEL_PATH = PROJECT_DIR / "models" / "triage_model.joblib"
-
-COUNTY_PATH = (
-    PROJECT_DIR / "data" / "processed" / "rq2_county_ppv.csv"
-)
-
+COUNTY_PATH = PROJECT_DIR / "data" / "processed" / "rq2_county_ppv.csv"
 SUBGROUP_PATH = (
-    PROJECT_DIR
-    / "data"
-    / "processed"
-    / "rq3_subgroup_performance.csv"
+    PROJECT_DIR / "data"/ "processed" / "rq3_subgroup_performance.csv"
 )
 
-LOCAL_BOUNDARIES = (
-    PROJECT_DIR / "data" / "geo" / "counties.geojson"
-)
+LOCAL_BOUNDARIES = PROJECT_DIR / "data" / "geo" / "counties.geojson"
 
 BOUNDARY_URL = (
     "https://raw.githubusercontent.com/plotly/datasets/"
@@ -119,39 +109,30 @@ STATE_NAMES = {
 
 # File versions invalidate caches when project exports change.
 def file_version(path):
-    information = path.stat()
-    return information.st_mtime_ns, information.st_size
+    info = path.stat()
+    return info.st_mtime_ns, info.st_size
 
 
 # Load the fitted model once instead of on every interaction.
 @st.cache_resource(show_spinner=False)
 def load_model_bundle(path, version):
     bundle = joblib.load(path)
-
     required = {"model", "features", "threshold"}
     missing = required - set(bundle)
 
     if missing:
         raise ValueError(
-            "Missing model information: "
-            + ", ".join(sorted(missing))
-        )
+            "Missing model information: "+ ", ".join(sorted(missing)))
 
     if not 0 <= float(bundle["threshold"]) <= 1:
-        raise ValueError(
-            "The model threshold must be between 0 and 1."
-        )
-
+        raise ValueError( "The model threshold must be between 0 and 1.")
     return bundle
 
 
 # Load and prepare the county results once per file version.
 @st.cache_data(show_spinner=False)
 def load_county_results(path, version):
-    counties = pd.read_csv(
-        path,
-        dtype={"fips": "string"},
-    )
+    counties = pd.read_csv(path,dtype={"fips": "string"},)
 
     required = {
         "fips",
@@ -167,13 +148,12 @@ def load_county_results(path, version):
 
     if missing:
         raise ValueError(
-            "Missing county columns: "
-            + ", ".join(sorted(missing))
-        )
+            "Missing county columns: " + ", ".join(sorted(missing)))
 
     # Preserve leading zeros in county identifiers.
     counties["fips"] = (
         counties["fips"]
+        .astype("string")
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
         .str.zfill(5)
@@ -207,27 +187,16 @@ def load_county_results(path, version):
 
     if counties.empty:
         raise ValueError("No usable county results were found.")
-
     if not counties["fips"].str.fullmatch(r"\d{5}").all():
-        raise ValueError(
-            "County FIPS identifiers must contain five digits."
-        )
-
+        raise ValueError("County FIPS identifiers must contain five digits." )
     if counties["fips"].duplicated().any():
-        raise ValueError(
-            "The county table contains duplicate FIPS identifiers."
-        )
-
+        raise ValueError("The county table contains duplicate FIPS identifiers.")
     if not counties["PPV"].between(0, 1).all():
-        raise ValueError(
-            "PPV must be stored as a fraction between 0 and 1."
-        )
+        raise ValueError("PPV must be stored as a fraction between 0 and 1.")
 
     counties["PPV_percent"] = counties["PPV"] * 100
 
-    counties["county_label"] = (
-        counties["locationname"] + ", " + counties["stateabbr"]
-    )
+    counties["county_label"] = (counties["locationname"] + ", " + counties["stateabbr"])
 
     return counties, excluded_count
 
@@ -235,21 +204,81 @@ def load_county_results(path, version):
 # Preserve subgroup results exactly as exported.
 @st.cache_data(show_spinner=False)
 def load_subgroup_results(path, version):
-    return pd.read_csv(path)
+    subgroups = pd.read_csv(path)
 
+    required = {
+        "dimension",
+        "group",
+        "n",
+        "positives",
+        "sensitivity",
+        "sens low",
+        "sens high",
+        "specificity",
+        "PPV",
+        "missed cases (FN)",
+        "interpretable",
+    }
 
-# Prefer archived boundaries when they are available.
-def get_boundary_source():
-    if LOCAL_BOUNDARIES.exists():
-        return (
-            str(LOCAL_BOUNDARIES),
-            file_version(LOCAL_BOUNDARIES),
+    missing = required - set(subgroups.columns)
+    if missing:
+        raise ValueError(
+            "Missing subgroup columns: "
+            + ", ".join(sorted(missing))
         )
 
-    return BOUNDARY_URL, "remote"
+    for column in ("dimension", "group"):
+        subgroups[column] = (
+            subgroups[column].astype("string").str.strip()
+        )
 
+    numeric_columns = [
+        "n",
+        "positives",
+        "sensitivity",
+        "sens low",
+        "sens high",
+        "specificity",
+        "PPV",
+        "missed cases (FN)",
+    ]
 
-# The shared boundary index is only read, never modified.
+    for column in numeric_columns:
+        subgroups[column] = pd.to_numeric(
+            subgroups[column],
+            errors="coerce",
+        )
+
+    def parse_interpretable(value):
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1"}
+        return pd.notna(value) and value == True
+
+    subgroups["interpretable"] = subgroups["interpretable"].map(
+        parse_interpretable
+    )
+
+    if subgroups.duplicated(["dimension", "group"]).any():
+        raise ValueError(
+            "The subgroup table has duplicate dimension/group records."
+        )
+
+    return subgroups
+
+def format_percentage(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "Not available"
+    return f"{number:.1%}" if 0 <= number <=1 else "Not available"
+
+def format_count(value):
+    try:
+        number = float(value)
+    except(TypeError, ValueError):
+        return "Not available"
+    return f"{number:,.0f}" if pd.notna(number) else "Not available"
+
 @st.cache_resource(show_spinner=False)
 def load_boundary_index(source, version):
     if source.startswith("https://"):
@@ -259,34 +288,71 @@ def load_boundary_index(source, version):
         with open(source, encoding="utf-8") as handle:
             boundaries = json.load(handle)
 
-    if boundaries.get("type") != "FeatureCollection":
-        raise ValueError(
-            "The map requires a GeoJSON FeatureCollection."
-        )
+    features = boundaries.get("features")
+    if boundaries.get("type") != "FeatureCollection" or not features:
+        raise ValueError("The map requires a GeoJSON FeatureCollection.")
 
-    return {
-        str(feature["id"]): feature
-        for feature in boundaries["features"]
-    }
+    index = {}
+
+    for feature in features:
+        properties = feature.get("properties") or {}
+        raw_id = feature.get("id")
+
+        if raw_id is None:
+            for key in ("GEOID", "GEOID10", "GEO_ID", "FIPS", "fips"):
+                if properties.get(key) is not None:
+                    raw_id = properties[key]
+                    break
+
+        if (
+            raw_id is None
+            and properties.get("STATEFP") is not None
+            and properties.get("COUNTYFP") is not None
+        ):
+            raw_id = (
+                f"{properties['STATEFP']}{properties['COUNTYFP']}"
+            )
+
+        if raw_id is None:
+            continue
+
+        raw_id = str(raw_id).strip()
+        if raw_id.endswith(".0"):
+            raw_id = raw_id[:-2]
+
+        digits = "".join(char for char in raw_id if char.isdigit())
+        if not digits:
+            continue
+
+        fips = digits[-5:].zfill(5)
+
+        normalized_feature = dict(feature)
+        normalized_feature["id"] = fips
+        index[fips] = normalized_feature
+
+    if not index:
+        raise ValueError("No county FIPS identifiers were found in the GeoJSON.")
+
+    return index
+
+# Prefer archived boundaries when they are available.
+def get_boundary_source():
+    if LOCAL_BOUNDARIES.exists():
+        return str(LOCAL_BOUNDARIES),file_version(LOCAL_BOUNDARIES)
+    return BOUNDARY_URL, "remote"
 
 
-# Cache the base map independently of the selected county outline.
-@st.cache_data(show_spinner=False, max_entries=16)
-def build_base_map(
-    map_data,
-    source_version,
-    national_view,
-    _boundary_index,
-):
-    # Send only the county geometries used in the current view.
+# The shared boundary index is only read, never modified.
+@st.cache_resource(show_spinner=False)
+def build_base_map(map_data, source_version, national_view, _boundary_index):
     geometry = {
         "type": "FeatureCollection",
         "features": [
             _boundary_index[fips]
             for fips in map_data["fips"]
+            if fips in _boundary_index
         ],
     }
-
     figure = px.choropleth(
         map_data,
         geojson=geometry,
@@ -304,29 +370,20 @@ def build_base_map(
         },
         labels={
             "fips": "County FIPS",
-            "PPV_percent": "Estimated PPV (%)",
-            "diagnosed_diabetes_pct": (
-                "Diagnosed diabetes prevalence (%)"
-            ),
+            "PPV_percent": "Estimated positive predictive value (%)",
+            "diagnosed_diabetes_pct": "Diagnosed diabetes prevalence (%)",
         },
     )
-
     figure.update_traces(
         marker_line_width=0.25,
         marker_line_color="#FFFFFF",
     )
-
     if not national_view:
         figure.update_geos(fitbounds="locations")
-
-    figure.update_geos(
-        bgcolor="rgba(0,0,0,0)",
-        showlakes=False,
-    )
-
+    figure.update_geos(bgcolor="rgba(0,0,0,0)", showlakes=False)
     figure.update_layout(
-        height=510,
-        margin=dict(l=0, r=0, t=10, b=0),
+        height=500,
+        margin=dict(l=0, r=0, t=8, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         coloraxis_colorbar=dict(
             title="PPV (%)",
@@ -339,8 +396,8 @@ def build_base_map(
             else str(map_data["stateabbr"].iloc[0])
         ),
     )
-
     return figure
+
 
 
 # Support both older and newer Streamlit chart-width arguments.
@@ -359,20 +416,24 @@ def display_map(figure):
         )
 
 
-# Panel 1: collect measurements and display the submitted prediction.
-def show_patient_prediction(bundle, model_version):
-    # Clear a stored prediction if the fitted model file changes.
+# PANEL 1 - NEW VERSION
+
+# Collect all inputs in one form and publish results only after submission.
+def show_patient_prediction(bundle, model_version, counties, subgroup_data):
     if st.session_state.get("model_version") != model_version:
         st.session_state.pop("patient_prediction", None)
+        st.session_state.pop("dashboard_selection", None)
         st.session_state["model_version"] = model_version
 
     with st.sidebar:
-        st.header("Patient measurements")
+        st.header("Inputs")
         st.caption(
-            "Review all measurements before calculating the prediction."
+            "Review the patient and dashboard selections, then submit once."
         )
 
-        with st.form("patient_form"):
+        with st.form("all_inputs_form"):
+            st.subheader("Patient measurements")
+
             age = st.number_input(
                 "Age (years)",
                 min_value=20,
@@ -380,12 +441,7 @@ def show_patient_prediction(bundle, model_version):
                 value=30,
                 step=1,
             )
-
-            sex = st.selectbox(
-                "Sex",
-                ("Male", "Female"),
-            )
-
+            sex = st.selectbox("Sex", ("Male", "Female"))
             waist = st.number_input(
                 "Waist circumference (cm)",
                 min_value=40.0,
@@ -393,7 +449,6 @@ def show_patient_prediction(bundle, model_version):
                 value=90.0,
                 step=0.5,
             )
-
             systolic = st.number_input(
                 "Systolic blood pressure (mmHg)",
                 min_value=60.0,
@@ -401,7 +456,6 @@ def show_patient_prediction(bundle, model_version):
                 value=120.0,
                 step=1.0,
             )
-
             diastolic = st.number_input(
                 "Diastolic blood pressure (mmHg)",
                 min_value=30.0,
@@ -410,14 +464,58 @@ def show_patient_prediction(bundle, model_version):
                 step=1.0,
             )
 
+            st.subheader("Dashboard inputs")
+
+            if counties is None or counties.empty:
+                place_label = st.selectbox(
+                    "State / County",
+                    ["County data unavailable"],
+                    disabled=True,
+                )
+                place_options = {}
+            else:
+                place_options = {
+                    (
+                        f"{STATE_NAMES.get(row.stateabbr, row.stateabbr)} · "
+                        f"{row.locationname} ({row.fips})"
+                    ): (row.stateabbr, row.fips)
+                    for row in counties[
+                        ["stateabbr", "locationname", "fips"]
+                    ].drop_duplicates().itertuples(index=False)
+                }
+                place_label = st.selectbox(
+                    "State / County",
+                    sorted(place_options),
+                )
+
+            race_options = []
+            if (
+                subgroup_data is not None
+                and {"dimension", "group"}.issubset(subgroup_data.columns)
+            ):
+                race_options = sorted(
+                    set(
+                        subgroup_data.loc[
+                            subgroup_data["dimension"] == "race",
+                            "group",
+                        ].dropna().astype(str)
+                    ) - {"Not specified"}
+                )
+
+            selected_race = st.selectbox(
+                "Ethnicity / race group",
+                ["Not specified"] + race_options,
+                disabled=subgroup_data is None,
+            )
+
             submitted = st.form_submit_button(
-                "Calculate prediction",
+                "Confirm inputs and update KPIs",
                 type="primary",
             )
 
     if submitted:
-        # Clear the previous result before validating a new submission.
         st.session_state.pop("patient_prediction", None)
+        st.session_state.pop("dashboard_selection", None)
 
         patient = pd.DataFrame([{
             "age": age,
@@ -427,30 +525,22 @@ def show_patient_prediction(bundle, model_version):
             "waist": waist,
         }])
 
-        missing_features = (
-            set(bundle["features"]) - set(patient.columns)
-        )
+        missing_features = set(bundle["features"]) - set(patient.columns)
 
         if missing_features:
-            st.error(
+            st.sidebar.error(
                 "Required model inputs are missing: "
                 + ", ".join(sorted(missing_features))
             )
-
         elif systolic <= diastolic:
-            st.error(
-                "Please check the blood pressure: "
-                "systolic pressure must exceed diastolic pressure."
+            st.sidebar.error(
+                "Please check blood pressure: systolic pressure must exceed "
+                "diastolic pressure."
             )
-
         else:
             try:
                 model = bundle["model"]
-
-                positive_class_index = list(
-                    model.classes_
-                ).index(1)
-
+                positive_class_index = list(model.classes_).index(1)
                 risk = float(
                     model.predict_proba(
                         patient[bundle["features"]]
@@ -463,12 +553,10 @@ def show_patient_prediction(bundle, model_version):
                     )
 
             except Exception as error:
-                st.error(
+                st.sidebar.error(
                     f"The prediction could not be calculated: {error}"
                 )
-
             else:
-                # Store only the submitted measurements and their result.
                 st.session_state["patient_prediction"] = {
                     "risk": risk,
                     "threshold": float(bundle["threshold"]),
@@ -476,74 +564,450 @@ def show_patient_prediction(bundle, model_version):
                     "sex": sex,
                 }
 
-    st.subheader("1 · Patient prediction")
+                selected_state, selected_fips = place_options.get(
+                    place_label,
+                    (None, None),
+                )
+                st.session_state["dashboard_selection"] = {
+                    "selected_state": selected_state,
+                    "selected_fips": selected_fips,
+                    "selected_race": selected_race,
+                }
 
-    result = st.session_state.get("patient_prediction")
+    return st.session_state.get(
+        "dashboard_selection",
+        {
+            "selected_state": None,
+            "selected_fips": None,
+            "selected_race": "Not specified",
+        },
+    )
 
-    if result is None:
-        st.info(
-            "Enter the measurements in the sidebar and "
-            "click Calculate prediction."
+def patient_subgroup_rows(subgroups, prediction, selected_race):
+    age = int(prediction["measurements"]["age"])
+
+    if age < 40:
+        age_band = "20-39"
+    elif age < 55:
+        age_band = "40-54"
+    elif age < 70:
+        age_band = "55-69"
+    else:
+        age_band = "70+"
+
+    comparisons = [
+        ("Sex", "sex", prediction["sex"]),
+        ("Age band", "age_band", age_band),
+    ]
+
+    if selected_race != "Not specified":
+        comparisons.append(
+            ("Race/ethnicity", "race", selected_race)
         )
-        return
 
-    risk = result["risk"]
-    threshold = result["threshold"]
-    measurements = result["measurements"]
+    rows = []
 
-    with st.container(border=True):
-        risk_column, threshold_column, flag_column = st.columns(
-            [1.3, 1, 1.4]
+    for label, dimension, group in comparisons:
+        match = subgroups.loc[
+            (subgroups["dimension"] == dimension)
+            & (subgroups["group"] == group)
+        ]
+
+        if match.empty:
+            rows.append({
+                "dimension": label,
+                "group": group,
+                "sensitivity": "Unavailable",
+                "ci": "—",
+                "positives": "Unavailable",
+            })
+            continue
+
+        row = match.iloc[0]
+
+        if not bool(row["interpretable"]):
+            sensitivity = "Not interpretable"
+            ci = "—"
+        else:
+            sensitivity = format_percentage(row["sensitivity"])
+            low = format_percentage(row["sens low"])
+            high = format_percentage(row["sens high"])
+            ci = (
+                f"{low}–{high}"
+                if low != "Not available" and high != "Not available"
+                else "Not available"
+            )
+
+        rows.append({
+            "dimension": label,
+            "group": group,
+            "sensitivity": sensitivity,
+            "ci": ci,
+            "positives": format_count(row["positives"]),
+        })
+
+    return rows
+
+def show_kpi_overview(
+    counties,
+    selected_state,
+    selected_fips,
+    subgroup_data,
+    selected_race,
+):
+    st.divider()
+    st.subheader("Triage overview")
+
+    rq1, rq2, rq3 = st.columns(3)
+
+    with rq1:
+        with st.container(border=True):
+            st.markdown("**RQ1 · Individual screening**")
+            result = st.session_state.get("patient_prediction")
+
+            if result is None:
+                st.metric("Estimated A1C ≥ 5.7% probability", "—")
+                st.caption(
+                    "Enter patient measurements in the sidebar "
+                    "and calculate a prediction."
+                )
+            else:
+                risk = result["risk"]
+                threshold = result["threshold"]
+                st.metric(
+                    "Estimated A1C ≥ 5.7% probability",
+                    f"{risk:.1%}",
+                )
+                if risk >= threshold:
+                    st.warning(
+                        "Screening positive: at or above the model "
+                        "threshold. Consider laboratory A1C follow-up."
+                    )
+                else:
+                    st.info(
+                        "Below the model screening threshold. "
+                        "This does not rule out prediabetes or diabetes."
+                    )
+
+                st.caption(f"Model threshold: {threshold:.1%}.")
+
+    with rq2:
+        with st.container(border=True):
+            st.markdown("**RQ2 · County reliability**")
+
+            if counties is None or selected_fips is None:
+                st.metric("Estimated county PPV", "—")
+                st.caption("County results are unavailable.")
+            else:
+                match = counties[
+                    (counties["stateabbr"] == selected_state)
+                    & (counties["fips"] == selected_fips)
+                ]
+
+                if match.empty:
+                    st.metric("Estimated county PPV", "—")
+                    st.caption("No result is available for this county.")
+                else:
+                    county = match.iloc[0]
+                    ppv = float(county["PPV"])
+                    st.metric("Estimated county PPV", f"{ppv:.1%}")
+                    st.write(
+                        f"**Response:** Under the RQ2 assumptions, about "
+                        f"{ppv * 100:.0f} of 100 positive flags in "
+                        f"{county['locationname']} would correspond to "
+                        "A1C ≥ 5.7%."
+                    )
+                    st.caption(
+                        "This is an assumption-based estimate, "
+                        "not a local validation."
+                    )
+
+    with rq3:
+        with st.container(border=True):
+            st.markdown("**RQ3 · Similar patient groups**")
+
+            required = {
+                "dimension", "group", "positives",
+                "sensitivity", "sens low", "sens high",
+                "interpretable",
+            }
+
+            prediction = st.session_state.get("patient_prediction")
+
+            if subgroup_data is None or not required.issubset(
+                subgroup_data.columns
+            ):
+                st.caption("Subgroup results are unavailable.")
+            elif prediction is None:
+                st.caption(
+                    "Enter and confirm patient measurements to show "
+                    "matching subgroup results."
+                )
+            else:
+                rows = patient_subgroup_rows(
+                    subgroup_data,
+                    prediction,
+                    selected_race,
+                )
+
+                for row in rows:
+                    st.write(
+                        f"**{row['dimension']}: {row['group']}** — "
+                        f"Sensitivity {row['sensitivity']}; "
+                        f"95% CI {row['ci']}; "
+                        f"{row['positives']} positive cases."
+                    )
+
+                if selected_race == "Not specified":
+                    st.caption(
+                        "Select a race/ethnicity group to include it."
+                    )
+
+# Panel 2: map and numerical results from the county reliability export.
+
+def show_county_detail_card(selected_county, selected_state):
+    state_name = STATE_NAMES.get(selected_state, selected_state)
+
+    st.markdown(
+        f"**{selected_county['locationname']}, {state_name}**"
+    )
+
+    ppv = float(selected_county["PPV"])
+
+    st.metric(
+        "Estimated PPV of a positive flag",
+        f"{ppv:.1%}",
+    )
+
+    st.info(
+        f"Under the RQ2 assumptions, about "
+        f"{ppv * 100:.0f} out of 100 people flagged "
+        "positive would have A1C ≥ 5.7%."
+    )
+
+    st.caption(
+        "County PPV describes positive screening flags "
+        "in the region. It does not replace the "
+        "patient's individual risk estimate."
+    )
+
+    with st.expander("Prevalence assumptions"):
+        diagnosed_pct = selected_county["diagnosed_diabetes_pct"]
+        screening_prevalence = selected_county["screening_prevalence"]
+
+        st.metric(
+            "Diagnosed diabetes · PLACES",
+            (
+                f"{diagnosed_pct:.1f}%"
+                if pd.notna(diagnosed_pct)
+                else "Unavailable"
+            ),
         )
 
-        risk_column.metric(
-            "Estimated probability of A1C ≥ 5.7%",
-            f"{risk:.1%}",
-        )
-
-        threshold_column.metric(
-            "Screening threshold",
-            f"{threshold:.1%}",
-        )
-
-        flag_column.metric(
-            "Model screening flag",
-            "Positive" if risk >= threshold else "Below threshold",
+        st.metric(
+            "Assumed prevalence · A1C ≥ 5.7%",
+            (
+                f"{screening_prevalence:.1%}"
+                if pd.notna(screening_prevalence)
+                and 0 <= screening_prevalence <= 1
+                else "Unavailable"
+            ),
         )
 
         st.caption(
-            f"Last submitted patient: "
-            f"age {measurements['age']:.0f} · "
-            f"{result['sex']} · "
-            f"waist {measurements['waist']:.1f} cm · "
-            f"BP {measurements['systolic']:.0f}/"
-            f"{measurements['diastolic']:.0f} mmHg. "
-            "Submit again after changing measurements."
+            "The target prevalence is derived in RQ2. "
+            "It is not directly measured by PLACES."
         )
 
-        if risk >= threshold:
-            st.warning(
-                "Positive screening flag: the model suggests "
-                "referral for a laboratory A1C test."
-            )
-        else:
-            st.info(
-                "Below the screening threshold: the model "
-                "does not flag this patient for referral."
-            )
 
-    st.warning(
-        "This is a screening estimate, not a diagnosis. "
-        "A result below the threshold does not rule out "
-        "prediabetes or diabetes."
+def draw_county_map(
+    matched,
+    selected_fips,
+    boundary_index,
+    source,
+    version,
+    national_view,
+):
+    map_data = matched[
+        [
+            "fips",
+            "stateabbr",
+            "PPV_percent",
+            "county_label",
+            "diagnosed_diabetes_pct",
+        ]
+    ]
+
+    figure = build_base_map(
+        map_data,
+        (source, version),
+        national_view,
+        boundary_index,
     )
 
+    # Copy the cached map before adding the selection outline.
+    figure = go.Figure(figure.to_dict())
 
-# Panel 2: map and numerical results from the county reliability export.
-def show_county_reliability(counties, excluded_count):
+    selected_feature = boundary_index.get(selected_fips)
+
+    if selected_feature is not None:
+        figure.add_trace(
+            go.Choropleth(
+                geojson={
+                    "type": "FeatureCollection",
+                    "features": [selected_feature],
+                },
+                featureidkey="id",
+                locations=[selected_fips],
+                z=[0],
+                zmin=0,
+                zmax=1,
+                colorscale=[
+                    [0, "rgba(0,0,0,0)"],
+                    [1, "rgba(0,0,0,0)"],
+                ],
+                marker_line_color="#E87924",
+                marker_line_width=2.5,
+                showscale=False,
+                hoverinfo="skip",
+            )
+        )
+
+    display_map(figure)
+
+
+def show_county_map(counties, state_counties, selected_fips):
+    national_view = st.checkbox(
+        "US overview (slower)",
+        value=False,
+        key="national_map",
+    )
+
+    show_map = st.checkbox(
+        "Show interactive map",
+        value=True,
+        key="show_map",
+    )
+
+    if not show_map:
+        return
+
+    try:
+        source, version = get_boundary_source()
+
+        with st.spinner("Preparing county map…"):
+            boundary_index = load_boundary_index(source, version)
+
+            view = counties if national_view else state_counties
+
+            matched = view[
+                view["fips"].isin(boundary_index)
+            ].copy()
+
+            unmatched = view[
+                ~view["fips"].isin(boundary_index)
+            ]
+
+            if matched.empty:
+                st.info(
+                    "No matching boundaries are "
+                    "available for this map view."
+                )
+            else:
+                draw_county_map(
+                    matched,
+                    selected_fips,
+                    boundary_index,
+                    source,
+                    version,
+                    national_view,
+                )
+
+        if not unmatched.empty:
+            st.caption(
+                f"{len(unmatched)} counties in this "
+                "view have no matching boundary. "
+                "Their results remain available "
+                "through the county selector."
+            )
+
+            with st.expander("Counties without matching boundaries"):
+                st.dataframe(
+                    unmatched[
+                        ["fips", "locationname", "stateabbr"]
+                    ],
+                    hide_index=True,
+                )
+
+        st.caption(
+            "Hover to inspect a county. The orange outline "
+            "marks the dropdown selection. Map clicks "
+            "do not change the selected county."
+        )
+
+    except Exception as error:
+        st.info(
+            "The map is temporarily unavailable. "
+            "County results remain available on the right."
+        )
+
+        with st.expander("Map loading details"):
+            st.code(str(error))
+
+
+def show_county_assumptions(counties, selected_county):
+    st.write(
+        "County PPV combines evaluated sensitivity and specificity "
+        "with an assumed local target prevalence. It assumes model "
+        "performance transfers to the county. This is not a local "
+        "validation of the model."
+    )
+
+    st.write(
+        "PLACES measures diagnosed diabetes. The RQ2 analysis "
+        "converts this to an assumed prevalence of A1C ≥ 5.7%."
+    )
+
+    additional_columns = [
+        column
+        for column in counties.columns
+        if column.startswith(("PPV_", "NPV_"))
+        and column != "PPV_percent"
+    ]
+
+    if additional_columns:
+        st.caption(
+            "Additional PPV and NPV scenario estimates; "
+            "values are shown as percentages."
+        )
+
+        additional_values = selected_county[additional_columns].map(
+            format_percentage
+        )
+
+        st.table(
+            additional_values.rename("Estimated value").to_frame()
+        )
+
+def show_county_reliability(
+    counties,
+    excluded_count,
+    selected_state,
+    selected_fips,
+):
+    if selected_state is None or selected_fips is None:
+        st.info(
+            "Confirm a state and county in the sidebar "
+            "to view regional results."
+        )
+        return
+
+    if counties is None or counties.empty:
+        st.info("County results are unavailable.")
+        return
+
     st.divider()
     st.subheader("2 · Regional reliability")
-
     st.write(
         "Explore how often a positive screening flag is expected "
         "to be correct in the selected county."
@@ -555,348 +1019,53 @@ def show_county_reliability(counties, excluded_count):
             "were excluded. Missing values are not treated as zero."
         )
 
-    state_column, county_column = st.columns([1, 2])
-
-    state_options = sorted(
-        counties["stateabbr"].unique(),
-        key=lambda code: STATE_NAMES.get(code, code),
-    )
-
-    selected_state = state_column.selectbox(
-        "State",
-        options=state_options,
-        format_func=lambda code: STATE_NAMES.get(code, code),
-        key="rq2_state",
-    )
-
-    state_counties = counties[
+    state_counties = counties.loc[
         counties["stateabbr"] == selected_state
     ].copy()
 
-    county_labels = state_counties.set_index(
-        "fips"
-    )["locationname"].to_dict()
-
-    selected_fips = county_column.selectbox(
-        "County or county equivalent",
-        options=sorted(
-            county_labels,
-            key=lambda code: (county_labels[code], code),
-        ),
-        format_func=lambda code: (
-            f"{county_labels[code]} ({code})"
-        ),
-        key=f"rq2_county_{selected_state}",
-    )
-
-    selected_county = state_counties[
+    selected_rows = state_counties.loc[
         state_counties["fips"] == selected_fips
-    ].iloc[0]
+    ]
+
+    if selected_rows.empty:
+        st.warning("The selected county has no reliability result.")
+        return
+
+    selected_county = selected_rows.iloc[0]
 
     with st.container(border=True):
         map_column, detail_column = st.columns([2.4, 1])
 
         with detail_column:
-            state_name = STATE_NAMES.get(
+            show_county_detail_card(
+                selected_county,
                 selected_state,
-                selected_state,
             )
-
-            st.markdown(
-                f"**{selected_county['locationname']}, "
-                f"{state_name}**"
-            )
-
-            ppv = float(selected_county["PPV"])
-
-            st.metric(
-                "Estimated PPV of a positive flag",
-                f"{ppv:.1%}",
-            )
-
-            st.info(
-                f"Under the RQ2 assumptions, about "
-                f"{ppv * 100:.0f} out of 100 people flagged "
-                "positive would have A1C ≥ 5.7%."
-            )
-
-            st.caption(
-                "County PPV describes positive screening flags "
-                "in the region. It does not replace the "
-                "patient's individual risk estimate."
-            )
-
-            with st.expander("Prevalence assumptions"):
-                diagnosed_pct = selected_county[
-                    "diagnosed_diabetes_pct"
-                ]
-
-                screening_prevalence = selected_county[
-                    "screening_prevalence"
-                ]
-
-                st.metric(
-                    "Diagnosed diabetes · PLACES",
-                    (
-                        f"{diagnosed_pct:.1f}%"
-                        if pd.notna(diagnosed_pct)
-                        else "Unavailable"
-                    ),
-                )
-
-                st.metric(
-                    "Assumed prevalence · A1C ≥ 5.7%",
-                    (
-                        f"{screening_prevalence:.1%}"
-                        if pd.notna(screening_prevalence)
-                        and 0 <= screening_prevalence <= 1
-                        else "Unavailable"
-                    ),
-                )
-
-                st.caption(
-                    "The target prevalence is derived in RQ2. "
-                    "It is not directly measured by PLACES."
-                )
 
         with map_column:
-            national_view = st.checkbox(
-                "US overview (slower)",
-                value=False,
-                key="national_map",
+            show_county_map(
+                counties,
+                state_counties,
+                selected_fips,
             )
-
-            show_map = st.checkbox(
-                "Show interactive map",
-                value=True,
-                key="show_map",
-            )
-
-            if show_map:
-                try:
-                    source, version = get_boundary_source()
-
-                    with st.spinner("Preparing county map…"):
-                        boundary_index = load_boundary_index(
-                            source,
-                            version,
-                        )
-
-                        view = (
-                            counties
-                            if national_view
-                            else state_counties
-                        )
-
-                        matched = view[
-                            view["fips"].isin(boundary_index)
-                        ].copy()
-
-                        unmatched = view[
-                            ~view["fips"].isin(boundary_index)
-                        ]
-
-                        if matched.empty:
-                            st.info(
-                                "No matching boundaries are "
-                                "available for this map view."
-                            )
-
-                        else:
-                            # Cache the base map without the selection.
-                            figure = build_base_map(
-                                matched[[
-                                    "fips",
-                                    "stateabbr",
-                                    "PPV_percent",
-                                    "county_label",
-                                    "diagnosed_diabetes_pct",
-                                ]],
-                                (source, version),
-                                national_view,
-                                boundary_index,
-                            )
-
-                            # Include only one geometry in the outline.
-                            if selected_fips in boundary_index:
-                                figure.add_trace(
-                                    go.Choropleth(
-                                        geojson={
-                                            "type": "FeatureCollection",
-                                            "features": [
-                                                boundary_index[
-                                                    selected_fips
-                                                ]
-                                            ],
-                                        },
-                                        featureidkey="id",
-                                        locations=[selected_fips],
-                                        z=[0],
-                                        zmin=0,
-                                        zmax=1,
-                                        colorscale=[
-                                            [0, "rgba(0,0,0,0)"],
-                                            [1, "rgba(0,0,0,0)"],
-                                        ],
-                                        marker_line_color="#E87924",
-                                        marker_line_width=2.5,
-                                        showscale=False,
-                                        hoverinfo="skip",
-                                    )
-                                )
-
-                            display_map(figure)
-
-                    if not unmatched.empty:
-                        st.caption(
-                            f"{len(unmatched)} counties in this "
-                            "view have no matching boundary. "
-                            "Their results remain available "
-                            "through the county selector."
-                        )
-
-                        with st.expander(
-                            "Counties without matching boundaries"
-                        ):
-                            st.dataframe(
-                                unmatched[[
-                                    "fips",
-                                    "locationname",
-                                    "stateabbr",
-                                ]],
-                                hide_index=True,
-                            )
-
-                    st.caption(
-                        "Hover to inspect a county. The orange outline "
-                        "marks the dropdown selection. Map clicks "
-                        "do not change the selected county."
-                    )
-
-                except Exception as error:
-                    st.info(
-                        "The map is temporarily unavailable. "
-                        "County results remain available on the right."
-                    )
-
-                    with st.expander("Map loading details"):
-                        st.code(str(error))
 
     with st.expander("RQ2 assumptions and additional results"):
-        st.write(
-            "County PPV combines evaluated sensitivity and specificity "
-            "with an assumed local target prevalence. It assumes model "
-            "performance transfers to the county. This is not a local "
-            "validation of the model."
-        )
-
-        st.write(
-            "PLACES measures diagnosed diabetes. The RQ2 analysis "
-            "converts this to an assumed prevalence of A1C ≥ 5.7%."
-        )
-
-        additional_columns = [
-            column
-            for column in counties.columns
-            if column.startswith(("PPV_", "NPV_"))
-        ]
-
-        if additional_columns:
-            st.caption(
-                "Additional estimates retain their original "
-                "export labels and units."
-            )
-
-            st.dataframe(
-                selected_county[additional_columns]
-                .rename("Exported value")
-                .to_frame()
-            )
+        show_county_assumptions(counties, selected_county)
 
 
-# Panel 3: show the exported evaluation results without guessing its schema.
 # Panel 3: match the submitted patient to separately evaluated groups.
-def show_subgroup_performance():
+def show_subgroup_performance(subgroups, error=None):
     st.divider()
-    st.subheader("3 · Performance for comparable patient groups")
+    st.subheader("3"
+                 " · Performance for comparable patient groups")
 
-    if not SUBGROUP_PATH.exists():
-        st.warning("The subgroup performance export was not found.")
+    if error:
+        st.error(error)
         return
 
-    try:
-        subgroups = load_subgroup_results(
-            str(SUBGROUP_PATH),
-            file_version(SUBGROUP_PATH),
-        ).copy()
-
-    except Exception as error:
-        st.error(f"Subgroup results could not be loaded: {error}")
+    if subgroups is None:
+        st.warning("Subgroup results are unavailable.")
         return
-
-    required_columns = {
-        "dimension",
-        "group",
-        "n",
-        "positives",
-        "sensitivity",
-        "sens low",
-        "sens high",
-        "specificity",
-        "PPV",
-        "missed cases (FN)",
-        "interpretable",
-    }
-
-    missing_columns = required_columns - set(subgroups.columns)
-
-    if missing_columns:
-        st.error(
-            "Missing subgroup columns: "
-            + ", ".join(sorted(missing_columns))
-        )
-        return
-
-    # Clean labels without changing the exported group definitions.
-    for column in ["dimension", "group"]:
-        subgroups[column] = (
-            subgroups[column].astype("string").str.strip()
-        )
-
-    if subgroups.duplicated(["dimension", "group"]).any():
-        st.error(
-            "Multiple records exist for the same dimension and group. "
-            "Check the subgroup export."
-        )
-        return
-
-    # Convert exported counts and metrics to numeric values.
-    numeric_columns = [
-        "n",
-        "positives",
-        "sensitivity",
-        "sens low",
-        "sens high",
-        "specificity",
-        "PPV",
-        "missed cases (FN)",
-    ]
-
-    for column in numeric_columns:
-        subgroups[column] = pd.to_numeric(
-            subgroups[column],
-            errors="coerce",
-        )
-
-    # Parse flags explicitly: the string 'false' must not become True.
-    def is_interpretable(value):
-        if isinstance(value, str):
-            return value.strip().lower() in {"true", "1"}
-        return pd.notna(value) and value == True
-
-    subgroups["interpretable"] = subgroups[
-        "interpretable"
-    ].map(is_interpretable)
 
     # Format unavailable or invalid metrics without inventing values.
     def percentage(value):
@@ -909,233 +1078,206 @@ def show_subgroup_performance():
             return f"{value:,.0f}"
         return "Not available"
 
-    result = st.session_state.get("patient_prediction")
+    display = subgroups.copy()
+    display["Dimension"] = display["dimension"].replace({
+        "sex": "Sex",
+        "race": "Race / ethnicity",
+        "age_band": "Age band",
+    })
+    display["N"] = display["n"].map(count)
+    display["Positive cases"] = display["positives"].map(count)
 
-    if result is None:
-        st.info(
-            "Calculate a patient prediction first to display "
-            "the matching sex and age groups."
-        )
+    def sensitivity_ci(row):
+        if not bool(row["interpretable"]):
+            return "Not interpreted"
 
-        with st.expander("View all exported subgroup results"):
-            st.dataframe(subgroups, hide_index=True)
-
-        return
-
-    # Use the last submitted patient, matching the prediction panel.
-    measurements = result["measurements"]
-    patient_age = int(measurements["age"])
-    patient_sex = result["sex"]
-
-    # Use the exact age-band boundaries from the evaluation export.
-    if patient_age < 20:
-        st.warning(
-            "The exported age groups cover adults aged 20 and older."
-        )
-        return
-    elif patient_age < 40:
-        patient_age_band = "20-39"
-    elif patient_age < 55:
-        patient_age_band = "40-54"
-    elif patient_age < 70:
-        patient_age_band = "55-69"
-    else:
-        patient_age_band = "70+"
-
-    st.caption(
-        f"Matching the last submitted patient: "
-        f"{patient_sex}, age {patient_age} "
-        f"(age group {patient_age_band})."
-    )
-
-    # Race/ethnicity is optional and is not passed to the risk model.
-    race_options = (
-        subgroups.loc[
-            subgroups["dimension"] == "race",
-            "group",
+        values = [
+            percentage(row["sensitivity"]),
+            percentage(row["sens low"]),
+            percentage(row["sens high"]),
         ]
-        .dropna()
-        .tolist()
-    )
 
-    selected_race = st.selectbox(
-        "Race/ethnicity (optional, self-reported)",
-        options=["Not specified"] + race_options,
-        key="rq3_race",
-    )
+        if any(value == "Not available" for value in values):
+            return "Not available"
 
-    st.caption(
-        "This optional selection changes the group comparison only. "
-        "It does not change the patient's model prediction."
-    )
+        return f"{values[0]} ({values[1]}–{values[2]})"
 
-    comparisons = [
-        ("Sex", "sex", patient_sex),
-        ("Age", "age_band", patient_age_band),
-        ("Race/ethnicity", "race", selected_race),
+    display["Sensitivity (95% CI)"] = display.apply(
+        sensitivity_ci,
+        axis=1,
+    )
+    display["Specificity"] = display["specificity"].map(percentage)
+    display["Missed positive cases"] = display[
+        "missed cases (FN)"
+    ].map(count)
+
+    display = display.rename(columns={
+        "group": "Group",
+        "interpretable": "Interpretable",
+    })
+
+    columns = [
+        "Dimension",
+        "Group",
+        "N",
+        "Positive cases",
+        "Sensitivity (95% CI)",
+        "Specificity",
+        "Missed positive cases",
+        "Interpretable",
     ]
 
-    columns = st.columns(3)
+    auc_columns = {"AUC", "AUC low", "AUC high"}
+    if auc_columns.issubset(display.columns):
+        for column in auc_columns:
+            display[column] = pd.to_numeric(
+                display[column],
+                errors="coerce",
+            )
 
-    for column, (title, dimension, group) in zip(
-        columns,
-        comparisons,
-    ):
-        with column:
-            with st.container(border=True):
-                st.markdown(f"**{title}**")
+        def auc_ci(row):
+            values = [row["AUC"], row["AUC low"], row["AUC high"]]
+            if any(pd.isna(value) for value in values):
+                return "Not available"
+            return (
+                f"{values[0]:.3f} "
+                f"({values[1]:.3f}–{values[2]:.3f})"
+            )
 
-                if group == "Not specified":
-                    st.info(
-                        "Select a race/ethnicity above "
-                        "to display this comparison."
-                    )
-                    continue
+        display["AUC (95% CI)"] = display.apply(auc_ci, axis=1)
+        columns.insert(
+            columns.index("Missed positive cases"),
+            "AUC (95% CI)",
+        )
 
-                st.write(group)
+    if st.session_state.get("patient_prediction") is not None:
+        st.caption(
+            "The KPI above shows results for the submitted patient's "
+            "matching groups. This table compares all groups."
+        )
+    else:
+        st.caption("This table compares all evaluated subgroup results.")
 
-                matching_rows = subgroups[
-                    (subgroups["dimension"] == dimension)
-                    & (subgroups["group"] == group)
-                ]
+    st.table(display.loc[:, columns])
 
-                if matching_rows.empty:
-                    st.warning(
-                        "No evaluation result is available "
-                        "for this group."
-                    )
-                    continue
 
-                row = matching_rows.iloc[0]
+def prepare_subgroup_results():
+    try:
+        subgroups = load_subgroup_results(
+            str(SUBGROUP_PATH),
+            file_version(SUBGROUP_PATH),
+        )
+        return subgroups, None
+    except Exception as error:
+        return None, f"Subgroup results could not be loaded: {error}"
 
-                st.caption(
-                    f"Evaluated participants: {count(row['n'])} · "
-                    f"Positive cases: {count(row['positives'])}"
-                )
 
-                # Respect the interpretation flag from the analysis.
-                if not row["interpretable"]:
-                    st.warning(
-                        "The analysis marks this group as unsuitable "
-                        "for performance interpretation. "
-                        "Only sample counts are shown here."
-                    )
-                    continue
-
-                st.metric(
-                    "Sensitivity",
-                    percentage(row["sensitivity"]),
-                )
-
-                low = row["sens low"]
-                high = row["sens high"]
-
-                if (
-                    pd.notna(low)
-                    and pd.notna(high)
-                    and 0 <= low <= high <= 1
-                ):
-                    st.caption(
-                        f"Exported sensitivity interval: "
-                        f"{low:.1%}–{high:.1%}"
-                    )
-                else:
-                    st.caption(
-                        "Sensitivity interval not available."
-                    )
-
-                st.metric(
-                    "Missed cases in evaluation",
-                    count(row["missed cases (FN)"]),
-                )
-
-                st.write(
-                    "**Specificity:** "
-                    + percentage(row["specificity"])
-                )
-
-                st.write(
-                    "**PPV in the evaluation sample:** "
-                    + percentage(row["PPV"])
-                )
-
-    st.info(
-        "Sensitivity describes how many people with the target "
-        "condition were flagged positive in the evaluated group. "
-        "Lower sensitivity means a greater proportion of cases "
-        "were missed at the evaluated threshold."
-    )
-
-    st.caption(
-        "Sex, age and race/ethnicity are separate evaluations. "
-        "These figures do not measure performance for their combined "
-        "intersection. Subgroup PPV comes from the evaluation sample "
-        "and differs from the geographically adjusted county PPV."
-    )
-
-    with st.expander("View all exported subgroup results"):
-        st.dataframe(subgroups, hide_index=True)
-
-# Assemble and display the three dashboard panels.
 def main():
     st.title("The Backpack Doctor")
     st.caption(
         "FIELD-BASED DYSGLYCEMIA TRIAGE · "
         "NHANES 2021–2023 · CDC PLACES"
     )
-
     st.write(
-        "Patient risk, regional reliability and "
-        "performance across patient groups."
+        "Patient risk, regional reliability and performance across "
+        "patient groups. Start with the inputs and KPI answers below; "
+        "the detailed map and subgroup results follow."
     )
 
-    # Panel 1: load the fitted model and display patient prediction.
+    bundle = None
+    model_version = None
+
     try:
         model_version = file_version(MODEL_PATH)
-
         bundle = load_model_bundle(
             str(MODEL_PATH),
             model_version,
         )
-
     except Exception as error:
-        st.error(
-            f"The fitted model could not be loaded: {error}"
-        )
+        st.session_state.pop("patient_prediction", None)
+        st.session_state.pop("model_version", None)
+        st.error(f"The fitted model could not be loaded: {error}")
 
-    else:
-        show_patient_prediction(bundle, model_version)
+    counties = None
+    excluded_count = 0
+    county_error = None
 
-    # Panel 2: load the exported county reliability results.
     try:
         counties, excluded_count = load_county_results(
             str(COUNTY_PATH),
             file_version(COUNTY_PATH),
         )
-
     except Exception as error:
-        st.error(
-            f"County results could not be loaded: {error}"
-        )
+        county_error = str(error)
 
-    else:
-        show_county_reliability(counties, excluded_count)
-
-    # Panel 3: display the matching subgroup evaluation results.
-    show_subgroup_performance()
 
     with st.expander("Model and evaluation"):
         st.write(
-            "The deployed model was refitted on the full analytic "
-            "sample. Reported model performance comes from the "
-            "evaluation in the modelling notebook, not from "
-            "evaluating the refitted model on its training data."
+            "The deployed model was refitted on the full analytic sample. "
+            "Reported model performance comes from the evaluation in the "
+            "modelling notebook, not from evaluating the refitted model on "
+            "its training data."
+        )
+        st.write(
+            "The dashboard loads the fitted model and exported county and "
+            "subgroup results. It does not retrain the model or repeat the "
+            "evaluation."
         )
 
-        st.write(
-            "The dashboard loads the fitted model and exported "
-            "county and subgroup results. It does not retrain "
-            "the model or repeat the evaluation."
+    subgroups, subgroup_error = prepare_subgroup_results()
+
+    if bundle is not None:
+        dashboard_selection = show_patient_prediction(
+            bundle,
+            model_version,
+            counties,
+            subgroups,
+        )
+    else:
+        dashboard_selection = {
+            "selected_state": None,
+            "selected_fips": None,
+            "selected_race": "Not specified",
+        }
+
+    selected_state = dashboard_selection["selected_state"]
+    selected_fips = dashboard_selection["selected_fips"]
+    selected_race = dashboard_selection["selected_race"]
+
+    tab_overview, tab_regional, tab_subgroups = st.tabs(
+        [
+            "1 · Triage overview",
+            "2 · Regional reliability",
+            "3 · Subgroup performance",
+        ]
+    )
+
+    with tab_overview:
+        show_kpi_overview(
+            counties,
+            selected_state,
+            selected_fips,
+            subgroups,
+            selected_race,
+        )
+
+    with tab_regional:
+        if counties is None:
+            st.warning(
+                f"County results could not be loaded: {county_error}"
+            )
+        else:
+            show_county_reliability(
+                counties,
+                excluded_count,
+                selected_state,
+                selected_fips,
+            )
+
+    with tab_subgroups:
+        show_subgroup_performance(
+            subgroups,
+            subgroup_error,
         )
 
     st.divider()
@@ -1145,6 +1287,5 @@ def main():
     )
 
 
-# Start the dashboard.
 if __name__ == "__main__":
     main()
